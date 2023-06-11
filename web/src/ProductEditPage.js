@@ -45,6 +45,11 @@ class ProductEditPage extends React.Component {
   getProduct() {
     ProductBackend.getProduct(this.props.account.owner, this.state.productName)
       .then((product) => {
+        if (product === null) {
+          this.props.history.push("/404");
+          return;
+        }
+
         this.setState({
           product: product,
         });
@@ -54,9 +59,13 @@ class ProductEditPage extends React.Component {
   getPaymentProviders() {
     ProviderBackend.getProviders(this.props.account.owner)
       .then((res) => {
-        this.setState({
-          providers: res.filter(provider => provider.category === "Payment"),
-        });
+        if (res.status === "ok") {
+          this.setState({
+            providers: res.data.filter(provider => provider.category === "Payment"),
+          });
+        } else {
+          Setting.showMessage("error", res.msg);
+        }
       });
   }
 
