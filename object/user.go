@@ -15,12 +15,10 @@
 package object
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 
 	"github.com/casdoor/casdoor/conf"
-	"github.com/casdoor/casdoor/proxy"
 	"github.com/casdoor/casdoor/util"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/xorm-io/core"
@@ -46,6 +44,7 @@ type User struct {
 	FirstName         string   `xorm:"varchar(100)" json:"firstName"`
 	LastName          string   `xorm:"varchar(100)" json:"lastName"`
 	Avatar            string   `xorm:"varchar(500)" json:"avatar"`
+	AvatarType        string   `xorm:"varchar(100)" json:"avatarType"`
 	PermanentAvatar   string   `xorm:"varchar(500)" json:"permanentAvatar"`
 	Email             string   `xorm:"varchar(100) index" json:"email"`
 	EmailVerified     bool     `json:"emailVerified"`
@@ -78,6 +77,8 @@ type User struct {
 	Hash              string   `xorm:"varchar(100)" json:"hash"`
 	PreHash           string   `xorm:"varchar(100)" json:"preHash"`
 	Groups            []string `xorm:"varchar(1000)" json:"groups"`
+	AccessKey         string   `xorm:"varchar(100)" json:"accessKey"`
+	AccessSecret      string   `xorm:"varchar(100)" json:"accessSecret"`
 
 	CreatedIp      string `xorm:"varchar(100)" json:"createdIp"`
 	LastSigninTime string `xorm:"varchar(100)" json:"lastSigninTime"`
@@ -223,14 +224,7 @@ func GetUserCount(owner, field, value string, groupId string) (int64, error) {
 	session := GetSession(owner, -1, -1, field, value, "", "")
 
 	if groupId != "" {
-		group, err := GetGroup(groupId)
-		if group == nil || err != nil {
-			return 0, err
-		}
-		// users count in group
-		return adapter.Engine.Table("user_group_relation").Join("INNER", "user AS u", "user_group_relation.user_id = u.id").
-			Where("user_group_relation.group_id = ?", group.Id).
-			Count(&UserGroupRelation{})
+		return GetGroupUserCount(groupId, field, value)
 	}
 
 	return session.Count(&User{})
@@ -274,20 +268,7 @@ func GetPaginationUsers(owner string, offset, limit int, field, value, sortField
 	users := []*User{}
 
 	if groupId != "" {
-		group, err := GetGroup(groupId)
-		if group == nil || err != nil {
-			return []*User{}, err
-		}
-
-		session := adapter.Engine.Prepare()
-		if offset != -1 && limit != -1 {
-			session.Limit(limit, offset)
-		}
-
-		err = session.Table("user_group_relation").Join("INNER", "user AS u", "user_group_relation.user_id = u.id").
-			Where("user_group_relation.group_id = ?", group.Id).
-			Find(&users)
-		return users, err
+		return GetPaginationGroupUsers(groupId, offset, limit, field, value, sortField, sortOrder)
 	}
 
 	session := GetSessionForUser(owner, offset, limit, field, value, sortField, sortOrder)
@@ -295,23 +276,6 @@ func GetPaginationUsers(owner string, offset, limit int, field, value, sortField
 	if err != nil {
 		return nil, err
 	}
-	return users, nil
-}
-
-func GetUsersByGroup(groupId string) ([]*User, error) {
-	group, err := GetGroup(groupId)
-	if group == nil || err != nil {
-		return []*User{}, err
-	}
-
-	users := []*User{}
-	err = adapter.Engine.Table("user_group_relation").Join("INNER", "user AS u", "user_group_relation.user_id = u.id").
-		Where("user_group_relation.group_id = ?", group.Id).
-		Find(&users)
-	if err != nil {
-		return nil, err
-	}
-
 	return users, nil
 }
 
@@ -410,6 +374,23 @@ func GetUserByUserId(owner string, userId string) (*User, error) {
 	}
 
 	user := User{Owner: owner, Id: userId}
+	existed, err := adapter.Engine.Get(&user)
+	if err != nil {
+		return nil, err
+	}
+
+	if existed {
+		return &user, nil
+	} else {
+		return nil, nil
+	}
+}
+
+func GetUserByAccessKey(accessKey string) (*User, error) {
+	if accessKey == "" {
+		return nil, nil
+	}
+	user := User{AccessKey: accessKey}
 	existed, err := adapter.Engine.Get(&user)
 	if err != nil {
 		return nil, err
@@ -526,7 +507,7 @@ func UpdateUser(id string, user *User, columns []string, isAdmin bool) (bool, er
 			"owner", "display_name", "avatar",
 			"location", "address", "country_code", "region", "language", "affiliation", "title", "homepage", "bio", "tag", "language", "gender", "birthday", "education", "score", "karma", "ranking", "signup_application",
 			"is_admin", "is_global_admin", "is_forbidden", "is_deleted", "hash", "is_default_avatar", "properties", "webauthnCredentials", "managedAccounts",
-			"signin_wrong_times", "last_signin_wrong_time", "groups",
+			"signin_wrong_times", "last_signin_wrong_time", "groups", "access_key", "access_secret",
 			"github", "google", "qq", "wechat", "facebook", "dingtalk", "weibo", "gitee", "linkedin", "wecom", "lark", "gitlab", "adfs",
 			"baidu", "alipay", "casdoor", "infoflow", "apple", "azuread", "slack", "steam", "bilibili", "okta", "douyin", "line", "amazon",
 			"auth0", "battlenet", "bitbucket", "box", "cloudfoundry", "dailymotion", "deezer", "digitalocean", "discord", "dropbox",
@@ -555,7 +536,7 @@ func updateUser(oldUser, user *User, columns []string) (int64, error) {
 	session.Begin()
 
 	if util.ContainsString(columns, "groups") {
-		affected, err := updateGroupRelation(session, user)
+		affected, err := updateUserGroupRelation(session, user)
 		if err != nil {
 			session.Rollback()
 			return affected, err
@@ -744,6 +725,11 @@ func DeleteUser(user *User) (bool, error) {
 		return false, err
 	}
 
+	affected, err = deleteRelationByUser(user.Id)
+	if err != nil {
+		return false, err
+	}
+
 	return affected != 0, nil
 }
 
@@ -790,12 +776,11 @@ func ExtendUserWithRolesAndPermissions(user *User) (err error) {
 		return
 	}
 
-	user.Roles, err = GetRolesByUser(user.GetId())
+	user.Permissions, user.Roles, err = GetPermissionsAndRolesByUser(user.GetId())
 	if err != nil {
-		return
+		return err
 	}
 
-	user.Permissions, err = GetPermissionsByUser(user.GetId())
 	return
 }
 
@@ -857,46 +842,6 @@ func userChangeTrigger(oldName string, newName string) error {
 	return session.Commit()
 }
 
-func (user *User) refreshAvatar() (bool, error) {
-	var err error
-	var fileBuffer *bytes.Buffer
-	var ext string
-
-	// Gravatar + Identicon
-	if strings.Contains(user.Avatar, "Gravatar") && user.Email != "" {
-		client := proxy.ProxyHttpClient
-		has, err := hasGravatar(client, user.Email)
-		if err != nil {
-			return false, err
-		}
-
-		if has {
-			fileBuffer, ext, err = getGravatarFileBuffer(client, user.Email)
-			if err != nil {
-				return false, err
-			}
-		}
-	}
-
-	if fileBuffer == nil && strings.Contains(user.Avatar, "Identicon") {
-		fileBuffer, ext, err = getIdenticonFileBuffer(user.Name)
-		if err != nil {
-			return false, err
-		}
-	}
-
-	if fileBuffer != nil {
-		avatarUrl, err := getPermanentAvatarUrlFromBuffer(user.Owner, user.Name, fileBuffer, ext, true)
-		if err != nil {
-			return false, err
-		}
-		user.Avatar = avatarUrl
-		return true, nil
-	}
-
-	return false, nil
-}
-
 func (user *User) IsMfaEnabled() bool {
 	return len(user.MultiFactorAuths) > 0
 }
@@ -927,4 +872,15 @@ func (user *User) GetPreferMfa(masked bool) *MfaProps {
 		}
 		return user.MultiFactorAuths[0]
 	}
+}
+
+func AddUserkeys(user *User, isAdmin bool) (bool, error) {
+	if user == nil {
+		return false, nil
+	}
+
+	user.AccessKey = util.GenerateId()
+	user.AccessSecret = util.GenerateId()
+
+	return UpdateUser(user.GetId(), user, []string{}, isAdmin)
 }

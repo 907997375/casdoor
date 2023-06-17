@@ -90,7 +90,7 @@ func (c *ApiController) GetUsers() {
 
 	if limit == "" || page == "" {
 		if groupId != "" {
-			maskedUsers, err := object.GetMaskedUsers(object.GetUsersByGroup(groupId))
+			maskedUsers, err := object.GetMaskedUsers(object.GetGroupUsers(groupId))
 			if err != nil {
 				c.ResponseError(err.Error())
 				return
@@ -410,10 +410,6 @@ func (c *ApiController) SetPassword() {
 		c.ResponseError(c.T("user:New password cannot contain blank space."))
 		return
 	}
-	if len(newPassword) <= 5 {
-		c.ResponseError(c.T("user:New password must have at least 6 characters"))
-		return
-	}
 
 	userId := util.GetId(userOwner, userName)
 
@@ -446,6 +442,12 @@ func (c *ApiController) SetPassword() {
 			c.ResponseError(msg)
 			return
 		}
+	}
+
+	msg := object.CheckPasswordComplexity(targetUser, newPassword)
+	if msg != "" {
+		c.ResponseError(msg)
+		return
 	}
 
 	targetUser.Password = newPassword
@@ -526,5 +528,36 @@ func (c *ApiController) GetUserCount() {
 	}
 
 	c.Data["json"] = count
+	c.ServeJSON()
+}
+
+// AddUserkeys
+// @Title AddUserkeys
+// @router /add-user-keys [post]
+// @Tag User API
+func (c *ApiController) AddUserkeys() {
+	var user object.User
+	err := json.Unmarshal(c.Ctx.Input.RequestBody, &user)
+	if err != nil {
+		c.ResponseError(err.Error())
+		return
+	}
+
+	isAdmin := c.IsAdmin()
+	affected, err := object.AddUserkeys(&user, isAdmin)
+	if err != nil {
+		c.ResponseError(err.Error())
+		return
+	}
+
+	c.ResponseOk(affected)
+}
+
+func (c *ApiController) RemoveUserFromGroup() {
+	owner := c.Ctx.Request.Form.Get("owner")
+	name := c.Ctx.Request.Form.Get("name")
+	groupId := c.Ctx.Request.Form.Get("groupId")
+
+	c.Data["json"] = wrapActionResponse(object.RemoveUserFromGroup(owner, name, groupId))
 	c.ServeJSON()
 }

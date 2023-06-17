@@ -45,6 +45,17 @@ export function getUser(owner, name) {
   }).then(res => res.json());
 }
 
+export function addUserKeys(user) {
+  return fetch(`${Setting.ServerUrl}/api/add-user-keys`, {
+    method: "POST",
+    credentials: "include",
+    body: JSON.stringify(user),
+    headers: {
+      "Accept-Language": Setting.getAcceptLanguage(),
+    },
+  }).then(res => res.json());
+}
+
 export function updateUser(owner, name, user) {
   const newUser = Setting.deepCopy(user);
   return fetch(`${Setting.ServerUrl}/api/update-user?id=${owner}/${encodeURIComponent(name)}`, {
@@ -209,5 +220,20 @@ export function checkUserPassword(values) {
     method: "POST",
     credentials: "include",
     body: JSON.stringify(values),
+  }).then(res => res.json());
+}
+
+export function removeUserFromGroup({owner, name, groupId}) {
+  const formData = new FormData();
+  formData.append("owner", owner);
+  formData.append("name", name);
+  formData.append("groupId", groupId);
+  return fetch(`${Setting.ServerUrl}/api/remove-user-from-group`, {
+    method: "POST",
+    credentials: "include",
+    body: formData,
+    headers: {
+      "Accept-Language": Setting.getAcceptLanguage(),
+    },
   }).then(res => res.json());
 }
